@@ -1,10 +1,10 @@
-const express = require("express");
-const supabase = require("../config/database");
-const { authenticate, authorize } = require("../middleware/auth");
+import express from "express";
+import pool from "../config/db.js";
+import { authenticate } from "../middleware/auth.js";
+import { authorize } from "../middleware/authorize.js";
 
 const router = express.Router();
 
-// Generate asset report
 router.post(
   "/assets",
   authenticate,
@@ -19,65 +19,64 @@ router.post(
         department,
         reportType = "summary",
       } = req.body;
+      const conditions = [];
+      const params = [];
 
-      let query = supabase.from("assets").select("*");
-
-      // Apply filters
       if (category) {
-        query = query.eq("category", category);
+        params.push(category);
+        conditions.push(`category = $${params.length}`);
       }
-
       if (status) {
-        query = query.eq("status", status);
+        params.push(status);
+        conditions.push(`status = $${params.length}`);
       }
-
       if (department) {
-        query = query.eq("current_department", department);
+        params.push(department);
+        conditions.push(`current_user_department = $${params.length}`);
       }
-
       if (startDate && endDate) {
-        query = query.gte("created_at", startDate).lte("created_at", endDate);
+        params.push(startDate, endDate);
+        conditions.push(
+          `created_at >= $${params.length - 1} AND created_at <= $${params.length}`,
+        );
       }
 
-      const { data: assets, error } = await query;
+      const where = conditions.length
+        ? `WHERE ${conditions.join(" AND ")}`
+        : "";
+      const { rows: assets } = await pool.query(
+        `SELECT * FROM v_assets_full ${where}`,
+        params,
+      );
 
-      if (error) {
-        console.error("Asset report generation error:", error);
-        return res.status(500).json({
-          success: false,
-          message: "Failed to generate asset report",
-        });
-      }
-
-      // Generate report data based on type
       let reportData = {};
-
       if (reportType === "summary") {
         reportData = {
           totalAssets: assets.length,
-          byStatus: assets.reduce((acc, asset) => {
-            acc[asset.status] = (acc[asset.status] || 0) + 1;
+          byStatus: assets.reduce((acc, a) => {
+            acc[a.status] = (acc[a.status] || 0) + 1;
             return acc;
           }, {}),
-          byCategory: assets.reduce((acc, asset) => {
-            acc[asset.category] = (acc[asset.category] || 0) + 1;
+          byCategory: assets.reduce((acc, a) => {
+            acc[a.category] = (acc[a.category] || 0) + 1;
             return acc;
           }, {}),
           totalValue: assets.reduce(
-            (sum, asset) => sum + (asset.purchase_price || 0),
-            0
+            (sum, a) => sum + Number(a.purchase_price || 0),
+            0,
           ),
         };
-      } else if (reportType === "detailed") {
+      } else {
         reportData = {
-          assets: assets.map((asset) => ({
-            asset_code: asset.asset_code,
-            product_name: asset.product_name,
-            category: asset.category,
-            status: asset.status,
-            purchase_price: asset.purchase_price,
-            current_user: asset.current_user_employee_code,
-            location: asset.location,
+          assets: assets.map((a) => ({
+            asset_code: a.asset_code,
+            product_name: a.product_name,
+            category: a.category,
+            status: a.status,
+            purchase_price: a.purchase_price,
+            current_user: a.current_user_employee_code,
+            current_user_name: a.current_user_name,
+            location: a.location,
           })),
         };
       }
@@ -93,15 +92,13 @@ router.post(
       });
     } catch (error) {
       console.error("Asset report generation error:", error);
-      res.status(500).json({
-        success: false,
-        message: "Internal server error",
-      });
+      res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
     }
-  }
+  },
 );
 
-// Generate maintenance report
 router.post(
   "/maintenance",
   authenticate,
@@ -109,59 +106,59 @@ router.post(
   async (req, res) => {
     try {
       const { startDate, endDate, status, technician } = req.body;
+      const conditions = [];
+      const params = [];
 
-      let query = supabase.from("maintenance_history").select(`
-        *,
-        assets(asset_code, product_name),
-        users!maintenance_history_reported_by_employee_code_fkey(full_name),
-        technician_user:users!maintenance_history_technician_employee_code_fkey(full_name)
-      `);
-
-      // Apply filters
       if (status) {
-        query = query.eq("status", status);
+        params.push(status);
+        conditions.push(`t.status = $${params.length}`);
       }
-
       if (technician) {
-        query = query.eq("technician_employee_code", technician);
+        params.push(technician);
+        conditions.push(`t.assigned_technician = $${params.length}`);
       }
-
       if (startDate && endDate) {
-        query = query.gte("created_at", startDate).lte("created_at", endDate);
+        params.push(startDate, endDate);
+        conditions.push(
+          `t.created_at >= $${params.length - 1} AND t.created_at <= $${params.length}`,
+        );
       }
+      const where = conditions.length
+        ? `WHERE ${conditions.join(" AND ")}`
+        : "";
 
-      const { data: maintenance, error } = await query;
+      const { rows: tickets } = await pool.query(
+        `SELECT t.*, a.asset_code, a.product_name,
+              ru.full_name AS reported_by_name, tu.full_name AS technician_name
+       FROM maintenance_tickets t
+       JOIN assets a ON a.id = t.asset_id
+       LEFT JOIN users ru ON ru.employee_code = t.reported_by
+       LEFT JOIN users tu ON tu.employee_code = t.assigned_technician
+       ${where}`,
+        params,
+      );
 
-      if (error) {
-        console.error("Maintenance report generation error:", error);
-        return res.status(500).json({
-          success: false,
-          message: "Failed to generate maintenance report",
-        });
-      }
-
-      // Generate report data
       const reportData = {
-        totalTickets: maintenance.length,
-        byStatus: maintenance.reduce((acc, ticket) => {
-          acc[ticket.status] = (acc[ticket.status] || 0) + 1;
+        totalTickets: tickets.length,
+        byStatus: tickets.reduce((acc, t) => {
+          acc[t.status] = (acc[t.status] || 0) + 1;
           return acc;
         }, {}),
-        totalCost: maintenance.reduce(
-          (sum, ticket) => sum + (ticket.cost || 0),
-          0
+        totalCost: tickets.reduce(
+          (sum, t) => sum + Number(t.repair_cost || 0),
+          0,
         ),
-        averageResolutionTime: 0, // Would need more complex calculation
-        tickets: maintenance.map((ticket) => ({
-          id: ticket.id,
-          asset_code: ticket.assets?.asset_code,
-          product_name: ticket.assets?.product_name,
-          reported_by: ticket.users?.full_name,
-          technician: ticket.technician_user?.full_name,
-          status: ticket.status,
-          issue_description: ticket.issue_description,
-          cost: ticket.cost,
-          created_at: ticket.created_at,
+        tickets: tickets.map((t) => ({
+          id: t.id,
+          ticket_number: t.ticket_number,
+          asset_code: t.asset_code,
+          product_name: t.product_name,
+          reported_by: t.reported_by_name,
+          technician: t.technician_name,
+          status: t.status,
+          issue_description: t.issue_description,
+          cost: t.repair_cost,
+          created_at: t.created_at,
         })),
       };
 
@@ -176,72 +173,71 @@ router.post(
       });
     } catch (error) {
       console.error("Maintenance report generation error:", error);
-      res.status(500).json({
-        success: false,
-        message: "Internal server error",
-      });
+      res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
     }
-  }
+  },
 );
 
-// Generate user activity report
 router.post("/users", authenticate, authorize("admin_it"), async (req, res) => {
   try {
     const { startDate, endDate, department } = req.body;
 
-    let userQuery = supabase.from("users").select("*");
-    let historyQuery = supabase.from("asset_history").select(`
-        *,
-        assets(asset_code, product_name),
-        users(full_name, department)
-      `);
-
+    const userParams = [];
+    let userWhere = "";
     if (department) {
-      userQuery = userQuery.eq("department", department);
-      historyQuery = historyQuery.eq("users.department", department);
+      userParams.push(department);
+      userWhere = `WHERE d.name = $1`;
     }
 
+    const { rows: users } = await pool.query(
+      `SELECT u.*, d.name AS department_name FROM users u
+       LEFT JOIN departments d ON d.id = u.department_id ${userWhere}`,
+      userParams,
+    );
+
+    const historyConditions = [];
+    const historyParams = [];
+    if (department) {
+      historyParams.push(department);
+      historyConditions.push(`d.name = $${historyParams.length}`);
+    }
     if (startDate && endDate) {
-      historyQuery = historyQuery
-        .gte("created_at", startDate)
-        .lte("created_at", endDate);
-    }
-
-    const [usersResult, historyResult] = await Promise.all([
-      userQuery,
-      historyQuery,
-    ]);
-
-    if (usersResult.error || historyResult.error) {
-      console.error(
-        "User report generation error:",
-        usersResult.error || historyResult.error
+      historyParams.push(startDate, endDate);
+      historyConditions.push(
+        `h.created_at >= $${historyParams.length - 1} AND h.created_at <= $${historyParams.length}`,
       );
-      return res.status(500).json({
-        success: false,
-        message: "Failed to generate user report",
-      });
     }
+    const historyWhere = historyConditions.length
+      ? `WHERE ${historyConditions.join(" AND ")}`
+      : "";
 
-    const users = usersResult.data;
-    const history = historyResult.data;
+    const { rows: history } = await pool.query(
+      `SELECT h.*, a.asset_code, u.full_name AS user_name
+       FROM asset_history h
+       JOIN assets a ON a.id = h.asset_id
+       LEFT JOIN users u ON u.employee_code = h.user_employee_code
+       LEFT JOIN departments d ON d.id = u.department_id
+       ${historyWhere} ORDER BY h.created_at DESC`,
+      historyParams,
+    );
 
-    // Generate report data
     const reportData = {
       totalUsers: users.length,
       activeUsers: users.filter((u) => u.status === "active").length,
-      byDepartment: users.reduce((acc, user) => {
-        acc[user.department || "Unassigned"] =
-          (acc[user.department || "Unassigned"] || 0) + 1;
+      byDepartment: users.reduce((acc, u) => {
+        const dep = u.department_name || "Unassigned";
+        acc[dep] = (acc[dep] || 0) + 1;
         return acc;
       }, {}),
       assetAssignments: history.filter((h) => h.action_type === "assigned")
         .length,
       assetReturns: history.filter((h) => h.action_type === "returned").length,
       recentActivity: history.slice(0, 20).map((h) => ({
-        user: h.users?.full_name,
+        user: h.user_name,
         action: h.action_type,
-        asset: h.assets?.asset_code,
+        asset: h.asset_code,
         date: h.created_at,
       })),
     };
@@ -257,11 +253,8 @@ router.post("/users", authenticate, authorize("admin_it"), async (req, res) => {
     });
   } catch (error) {
     console.error("User report generation error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error",
-    });
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
-module.exports = router;
+export default router;
