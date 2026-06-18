@@ -1,8 +1,8 @@
-const express = require("express");
-const supabase = require("../config/database");
-const { allocationSlipSchema } = require("../validation/schemas");
-const validate = require("../middleware/validate");
-const { authenticate, authorize } = require("../middleware/auth");
+import express from "express";
+import supabase from "../config/supabase.js";
+import { allocationSlipSchema } from "../validation/schemas.js";
+import validate from "../middleware/validate.js";
+import { authenticate, authorize } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -25,7 +25,7 @@ router.get("/", authenticate, async (req, res) => {
         assets(asset_code, product_name),
         users!allocation_slips_employee_code_fkey(full_name, department),
         issued_by_user:users!allocation_slips_issued_by_fkey(full_name)
-      `
+      `,
       )
       .order("created_at", { ascending: false });
 
@@ -90,7 +90,7 @@ router.get("/:slipNumber", authenticate, async (req, res) => {
         assets(asset_code, product_name, category, model, serial_number),
         users!allocation_slips_employee_code_fkey(full_name, department, email),
         issued_by_user:users!allocation_slips_issued_by_fkey(full_name)
-      `
+      `,
       )
       .eq("slip_number", slipNumber)
       .single();
@@ -162,7 +162,7 @@ router.post(
         message: "Internal server error",
       });
     }
-  }
+  },
 );
 
 // Update allocation slip
@@ -205,7 +205,7 @@ router.put(
         message: "Internal server error",
       });
     }
-  }
+  },
 );
 
 // Delete allocation slip
@@ -241,7 +241,7 @@ router.delete(
         message: "Internal server error",
       });
     }
-  }
+  },
 );
 
-module.exports = router;
+export default router;

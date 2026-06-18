@@ -1,8 +1,8 @@
-const express = require("express");
-const supabase = require("../config/database");
-const { userSchema } = require("../validation/schemas");
-const validate = require("../middleware/validate");
-const { authenticate, authorize } = require("../middleware/auth");
+import express from "express";
+import supabase from "../config/supabase.js";
+import { userSchema } from "../validation/schemas.js";
+import validate from "../middleware/validate.js";
+import { authenticate, authorize } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -27,7 +27,7 @@ router.get(
       // Apply filters
       if (search) {
         query = query.or(
-          `employee_code.ilike.%${search}%,email.ilike.%${search}%,full_name.ilike.%${search}%`
+          `employee_code.ilike.%${search}%,email.ilike.%${search}%,full_name.ilike.%${search}%`,
         );
       }
 
@@ -76,7 +76,7 @@ router.get(
         message: "Internal server error",
       });
     }
-  }
+  },
 );
 
 // Get single user
@@ -137,7 +137,7 @@ router.post(
         .from("users")
         .select("id")
         .or(
-          `email.eq.${userData.email},employee_code.eq.${userData.employee_code}`
+          `email.eq.${userData.email},employee_code.eq.${userData.employee_code}`,
         )
         .single();
 
@@ -174,7 +174,7 @@ router.post(
         message: "Internal server error",
       });
     }
-  }
+  },
 );
 
 // Update user
@@ -236,7 +236,7 @@ router.put(
         message: "Internal server error",
       });
     }
-  }
+  },
 );
 
 // Delete user (soft delete)
@@ -284,7 +284,7 @@ router.delete(
         message: "Internal server error",
       });
     }
-  }
+  },
 );
 
 // Get user's assigned assets
@@ -331,4 +331,4 @@ router.get("/:employeeCode/assets", authenticate, async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

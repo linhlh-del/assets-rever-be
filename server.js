@@ -1,10 +1,13 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import assetsRouter from "./routes/assets.js";
-import dashboardRouter from "./routes/dashboard.js";
 
+// Load environment variables before importing modules that depend on them
 dotenv.config();
+
+// Dynamically import routers so env vars are available when their modules load
+const { default: assetsRouter } = await import("./routes/assets.js");
+const { default: dashboardRouter } = await import("./routes/dashboard.js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;

@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import csv from "csv-parse/sync";
 import dotenv from "dotenv";
-import { supabase } from "../lib/supabase.js";
+import supabase from "../config/supabase.js";
 import { fileURLToPath } from "url";
 
 dotenv.config();
