@@ -1,113 +1,76 @@
-const jwt = require("jsonwebtoken");
-const supabase = require("../config/database");
+import { createRemoteJWKSet, jwtVerify } from "jose";
+import pool from "../config/db.js";
 
-const authenticate = async (req, res, next) => {
+const JWKS = createRemoteJWKSet(
+  new URL(`${process.env.SUPABASE_URL}/auth/v1/.well-known/jwks.json`),
+);
+
+export const authenticate = async (req, res, next) => {
   try {
+    // 1. Lấy token từ header
     const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res
+        .status(401)
+        .json({ error: "Missing or invalid authorization header" });
+    }
 
-    console.log("🔐 Auth check:", {
-      hasHeader: !!authHeader,
-      path: req.path,
-      method: req.method,
+    const token = authHeader.split(" ")[1];
+
+    // 2. Verify JWT cục bộ (không gọi API Supabase)
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: `${process.env.SUPABASE_URL}/auth/v1`,
     });
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      console.error("❌ No bearer token");
-      return res.status(401).json({
-        success: false,
-        message: "Access denied. No token provided.",
-      });
+    const email = payload.email;
+    if (!email) {
+      return res.status(401).json({ error: "Invalid token: missing email" });
     }
 
-    const token = authHeader.substring(7);
-    console.log("🔍 Verifying token...");
+    // 3. Lookup user từ VPS Postgres
+    const { rows } = await pool.query(
+      `SELECT id, employee_code, full_name, role, status, auth_user_id
+       FROM users
+       WHERE email = $1`,
+      [email],
+    );
 
-    // Verify token with Supabase
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser(token);
-
-    if (error) {
-      console.error("❌ Token verification failed:", error.message);
-      return res.status(401).json({
-        success: false,
-        message: `Invalid token: ${error.message}`,
-      });
+    if (rows.length === 0) {
+      return res.status(403).json({ error: "NOT_REGISTERED" });
     }
 
-    if (!user) {
-      console.error("❌ No user from token");
-      return res.status(401).json({
-        success: false,
-        message: "Invalid or expired token.",
-      });
+    const user = rows[0];
+
+    if (user.status !== "active") {
+      return res.status(403).json({ error: "ACCOUNT_INACTIVE" });
     }
 
-    console.log("✅ Token valid for:", user.email);
-
-    // Get user details from database
-    const { data: userData, error: dbError } = await supabase
-      .from("users")
-      .select("employee_code, role, full_name, department")
-      .eq("email", user.email)
-      .maybeSingle();
-
-    if (dbError) {
-      console.error("❌ DB error:", dbError);
-      return res.status(500).json({
-        success: false,
-        message: "Database error.",
-      });
+    // 4. Ghi auth_user_id nếu đang NULL
+    if (!user.auth_user_id && payload.sub) {
+      await pool.query(`UPDATE users SET auth_user_id = $1 WHERE id = $2`, [
+        payload.sub,
+        user.id,
+      ]);
     }
 
-    if (!userData) {
-      console.error("❌ User not in DB:", user.email);
-      return res.status(401).json({
-        success: false,
-        message: "User not found in database.",
-      });
-    }
-
-    console.log("✅ User authenticated:", userData.role);
-
+    // 5. Gắn vào req.user cho các middleware/routes sau
     req.user = {
       id: user.id,
-      email: user.email,
-      employee_code: userData.employee_code,
-      role: userData.role,
-      full_name: userData.full_name,
-      department: userData.department,
+      employee_code: user.employee_code,
+      full_name: user.full_name,
+      role: user.role,
+      email,
     };
 
     next();
-  } catch (error) {
-    console.error("❌ Auth middleware error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Authentication failed.",
-    });
+  } catch (err) {
+    if (err.code === "ERR_JWT_EXPIRED") {
+      return res.status(401).json({ error: "TOKEN_EXPIRED" });
+    }
+    if (err.code?.startsWith("ERR_JWT")) {
+      return res.status(401).json({ error: "INVALID_TOKEN" });
+    }
+    console.error("Auth middleware error:", err.message);
+    return res.status(500).json({ error: "Internal server error" });
   }
 };
-
-const authorize = (...allowedRoles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required.",
-      });
-    }
-
-    if (!allowedRoles.includes(req.user.role)) {
-      console.warn(`⚠️  Access denied for role: ${req.user.role}`);
-      return res.status(403).json({
-        success: false,
-        message: "Access denied. Insufficient permissions.",
-      });
-    }
-
-    next();
-  };
-};
-module.exports = { authenticate, authorize };
