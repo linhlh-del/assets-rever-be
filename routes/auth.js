@@ -5,7 +5,6 @@ import { authenticate } from "../middleware/auth.js";
 const router = express.Router();
 
 router.get("/me", authenticate, (req, res) => {
-  res.json({ success: true, data: { user: req.user } });
+  res.json({ user: req.user }); // ← bỏ wrapper success/data
 });
-
 export default router;
