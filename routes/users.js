@@ -1,18 +1,23 @@
 import express from "express";
 import pool from "../config/db.js";
-import { userSchema } from "../validation/schemas.js";
+// import { userSchema } from "../validation/schemas.js";
+import { userSchema, userUpdateSchema } from "../validation/schemas.js";
 import validate from "../middleware/validate.js";
 import { authenticate } from "../middleware/auth.js";
 import { authorize } from "../middleware/authorize.js";
 
 const router = express.Router();
 
+// Helper — check quyền admin (dùng lại nhiều chỗ)
+const isAdminRole = (role) =>
+  role === "super_admin" || role === "it_admin" || role === "manager";
+
 // Base SELECT — dùng lại nhiều chỗ
 const USER_SELECT = `
   SELECT u.id, u.employee_code, u.email, u.full_name,
          u.first_name, u.last_name, u.phone,
          u.department_id, d.name  AS department,
-         u.job_title_id,  jt.name AS job_title,
+         u.job_title_id,  jt.title AS job_title,
          u.report_to, u.role, u.status,
          u.auth_user_id, u.created_at, u.updated_at
   FROM users u
@@ -24,7 +29,7 @@ const USER_SELECT = `
 router.get(
   "/",
   authenticate,
-  authorize("it_admin", "manager"),
+  authorize("it_admin", "manager"), // super_admin bypass tự động trong authorize.js
   async (req, res) => {
     try {
       const {
@@ -72,10 +77,9 @@ router.get(
 
       // Data
       const pageNum = Math.max(1, parseInt(page));
-      const pageSize = Math.min(100, parseInt(limit)); // cap tối đa 100
+      const pageSize = Math.min(100, parseInt(limit));
       const offset = (pageNum - 1) * pageSize;
 
-      // Push LIMIT và OFFSET vào sau params filter
       params.push(pageSize, offset);
 
       const { rows: users } = await pool.query(
@@ -112,10 +116,9 @@ router.get("/:employeeCode", authenticate, async (req, res) => {
   try {
     const { employeeCode } = req.params;
 
-    // Chỉ it_admin/manager hoặc chính user đó mới xem được
+    // super_admin, it_admin, manager hoặc chính user đó mới xem được
     if (
-      req.user.role !== "it_admin" &&
-      req.user.role !== "manager" &&
+      !isAdminRole(req.user.role) &&
       req.user.employee_code !== employeeCode
     ) {
       return res.status(403).json({ success: false, message: "Access denied" });
@@ -143,7 +146,7 @@ router.get("/:employeeCode", authenticate, async (req, res) => {
 router.post(
   "/",
   authenticate,
-  authorize("it_admin"),
+  authorize("it_admin"), // super_admin bypass tự động
   validate(userSchema),
   async (req, res) => {
     try {
@@ -208,15 +211,79 @@ router.post(
   },
 );
 
+// bulk user update
+// PUT /api/users/bulk — đặt TRƯỚC route /:employeeCode
+router.put("/bulk", authenticate, authorize("it_admin"), async (req, res) => {
+  try {
+    const { employee_codes, status, department_id } = req.body;
+
+    if (
+      !employee_codes ||
+      !Array.isArray(employee_codes) ||
+      employee_codes.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "employee_codes phải là mảng không rỗng",
+      });
+    }
+
+    // Build dynamic SET clause
+    const setClauses = ["updated_at = NOW()"];
+    const params = [];
+
+    if (status) {
+      params.push(status);
+      setClauses.push(`status = $${params.length}`);
+    }
+    if (department_id) {
+      params.push(department_id);
+      setClauses.push(`department_id = $${params.length}`);
+    }
+
+    if (setClauses.length === 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Cần ít nhất 1 field để update (status hoặc department_id)",
+      });
+    }
+
+    // Tạo placeholder cho IN clause: $2, $3, $4...
+    const placeholders = employee_codes
+      .map((_, i) => `$${params.length + i + 1}`)
+      .join(", ");
+
+    params.push(...employee_codes);
+
+    const { rows } = await pool.query(
+      `UPDATE users
+         SET ${setClauses.join(", ")}
+         WHERE employee_code IN (${placeholders})
+         RETURNING employee_code, status`,
+      params,
+    );
+
+    res.json({
+      success: true,
+      message: `Cập nhật ${rows.length} nhân viên thành công`,
+      data: { updated: rows },
+    });
+  } catch (error) {
+    console.error("Bulk update error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
 // PUT /api/users/:employeeCode
 router.put(
   "/:employeeCode",
   authenticate,
-  validate(userSchema),
+  validate(userUpdateSchema),
   async (req, res) => {
     try {
       const { employeeCode } = req.params;
-      const isAdmin = req.user.role === "it_admin";
+      const isAdmin =
+        req.user.role === "super_admin" || req.user.role === "it_admin";
       const isSelf = req.user.employee_code === employeeCode;
 
       if (!isAdmin && !isSelf) {
@@ -237,7 +304,7 @@ router.put(
         status,
       } = req.body;
 
-      // Chỉ it_admin mới được đổi role và status
+      // Chỉ super_admin và it_admin mới được đổi role và status
       const newRole = isAdmin ? (role ?? null) : null;
       const newStatus = isAdmin ? (status ?? null) : null;
 
@@ -293,7 +360,7 @@ router.put(
 router.delete(
   "/:employeeCode",
   authenticate,
-  authorize("it_admin"),
+  authorize("it_admin"), // super_admin bypass tự động
   async (req, res) => {
     try {
       // Không cho xóa chính mình
@@ -327,14 +394,56 @@ router.delete(
   },
 );
 
+// GET /api/users/:employeeCode/asset-history
+router.get("/:employeeCode/asset-history", authenticate, async (req, res) => {
+  try {
+    const { employeeCode } = req.params;
+
+    if (
+      !isAdminRole(req.user.role) &&
+      req.user.employee_code !== employeeCode
+    ) {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT
+         ah.id,
+         ah.action_type,
+         ah.from_date,
+         ah.to_date,
+         ah.notes,
+         ah.created_at,
+         a.asset_code,
+         a.product_name,
+         a.category,
+         a.brand,
+         a.model,
+         hs.id AS handover_slip_id,
+         pb.full_name AS performed_by_name
+       FROM asset_history ah
+       JOIN assets a ON a.id = ah.asset_id
+       LEFT JOIN handover_slips hs ON hs.id = ah.handover_slip_id
+       LEFT JOIN users pb ON pb.employee_code = ah.performed_by
+       WHERE ah.user_employee_code = $1
+       ORDER BY ah.created_at DESC`,
+      [employeeCode],
+    );
+
+    res.json({ success: true, data: { history: rows } });
+  } catch (error) {
+    console.error("User asset history error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
 // GET /api/users/:employeeCode/assets
 router.get("/:employeeCode/assets", authenticate, async (req, res) => {
   try {
     const { employeeCode } = req.params;
 
     if (
-      req.user.role !== "it_admin" &&
-      req.user.role !== "manager" &&
+      !isAdminRole(req.user.role) &&
       req.user.employee_code !== employeeCode
     ) {
       return res.status(403).json({ success: false, message: "Access denied" });

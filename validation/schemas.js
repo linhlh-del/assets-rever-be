@@ -81,3 +81,18 @@ export const returnSchema = Joi.object({
   asset_ids: Joi.array().items(Joi.string().uuid()).min(1).required(),
   notes: Joi.string().max(1000),
 });
+
+export const userUpdateSchema = Joi.object({
+  full_name: Joi.string().min(2).max(100),
+  first_name: Joi.string().max(50).allow("", null),
+  last_name: Joi.string().max(50).allow("", null),
+  phone: Joi.string()
+    .pattern(/^[0-9+\-\s()]+$/)
+    .max(20)
+    .allow("", null),
+  department_id: Joi.string().uuid().allow(null),
+  job_title_id: Joi.string().uuid().allow(null),
+  report_to: Joi.string().max(20).allow("", null),
+  role: Joi.string().valid("super_admin", "it_admin", "manager", "user"),
+  status: Joi.string().valid("active", "inactive", "resigned"),
+});
