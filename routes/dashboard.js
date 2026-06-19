@@ -1,105 +1,95 @@
 import express from "express";
-import supabase from "../config/supabase.js";
+import pool from "../config/db.js";
+import { authenticate } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// GET /api/dashboard - Lấy thống kê dashboard
-router.get("/", async (req, res, next) => {
+router.get("/", authenticate, async (req, res, next) => {
   try {
-    console.log("📊 Fetching dashboard statistics...");
+    const [
+      summaryRes,
+      categoryRes,
+      statusRes,
+      recentAssetsRes,
+      recentTicketsRes,
+    ] = await Promise.all([
+      // Tổng quan assets
+      pool.query(`
+          SELECT
+            COUNT(*)                                        AS total,
+            COUNT(*) FILTER (WHERE status = 'available')   AS available,
+            COUNT(*) FILTER (WHERE status = 'in_use')      AS in_use,
+            COUNT(*) FILTER (WHERE status = 'maintenance') AS maintenance,
+            COUNT(*) FILTER (WHERE status = 'broken')      AS broken,
+            COUNT(*) FILTER (WHERE status = 'disposed')    AS disposed
+          FROM assets
+        `),
 
-    // 1. Tổng số tài sản
-    const { count: totalAssets } = await supabase
-      .from("assets")
-      .select("*", { count: "exact", head: true });
+      // Theo category
+      pool.query(`
+          SELECT category, COUNT(*) AS count
+          FROM assets
+          GROUP BY category
+          ORDER BY count DESC
+        `),
 
-    // 2. Tài sản có sẵn
-    const { count: availableAssets } = await supabase
-      .from("assets")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "available");
+      // Theo status (cho chart)
+      pool.query(`
+          SELECT status, COUNT(*) AS count
+          FROM assets
+          GROUP BY status
+          ORDER BY count DESC
+        `),
 
-    // 3. Tài sản được gán
-    const { count: assignedAssets } = await supabase
-      .from("assets")
-      .select("*", { count: "exact", head: true })
-      .eq("status", "assigned");
+      // 5 tài sản mới nhất
+      pool.query(`
+          SELECT a.id, a.asset_code, a.product_name, a.category,
+                 a.brand, a.status, a.location, a.created_at,
+                 u.full_name AS current_user_name
+          FROM assets a
+          LEFT JOIN users u ON u.employee_code = a.current_user_employee_code
+          ORDER BY a.created_at DESC
+          LIMIT 5
+        `),
 
-    // 4. Thống kê theo category
-    const { data: categoryData } = await supabase
-      .from("assets")
-      .select("category");
+      // 5 maintenance ticket mới nhất
+      pool.query(`
+          SELECT mt.id, mt.ticket_number, mt.priority, mt.status,
+                 mt.issue_description, mt.created_at,
+                 a.asset_code, a.product_name,
+                 u.full_name AS reported_by_name
+          FROM maintenance_tickets mt
+          JOIN assets a ON a.id = mt.asset_id
+          LEFT JOIN users u ON u.employee_code = mt.reported_by
+          ORDER BY mt.created_at DESC
+          LIMIT 5
+        `),
+    ]);
 
-    const categoryStats = [];
-    if (categoryData) {
-      const categoryMap = {};
-      categoryData.forEach((item) => {
-        if (item.category) {
-          categoryMap[item.category] = (categoryMap[item.category] || 0) + 1;
-        }
-      });
-      Object.entries(categoryMap).forEach(([category, count]) => {
-        categoryStats.push({ category, count });
-      });
-    }
-
-    // 5. Thống kê theo department
-    const { data: departmentData } = await supabase
-      .from("assets")
-      .select("department");
-
-    const departmentStats = [];
-    if (departmentData) {
-      const departmentMap = {};
-      departmentData.forEach((item) => {
-        if (item.department) {
-          departmentMap[item.department] =
-            (departmentMap[item.department] || 0) + 1;
-        }
-      });
-      Object.entries(departmentMap).forEach(([department, count]) => {
-        departmentStats.push({ department, count });
-      });
-    }
-
-    // 6. Thống kê theo status
-    const { data: statusData } = await supabase.from("assets").select("status");
-
-    const statusStats = [];
-    if (statusData) {
-      const statusMap = {};
-      statusData.forEach((item) => {
-        if (item.status) {
-          statusMap[item.status] = (statusMap[item.status] || 0) + 1;
-        }
-      });
-      Object.entries(statusMap).forEach(([status, count]) => {
-        statusStats.push({ status, count });
-      });
-    }
-
-    console.log("✅ Dashboard statistics retrieved");
-    console.log({
-      totalAssets,
-      availableAssets,
-      assignedAssets,
-      categoryStats: categoryStats.length,
-      departmentStats: departmentStats.length,
-      statusStats: statusStats.length,
-    });
+    const s = summaryRes.rows[0];
 
     res.json({
       summary: {
-        totalAssets: totalAssets || 0,
-        availableAssets: availableAssets || 0,
-        assignedAssets: assignedAssets || 0,
+        totalAssets: parseInt(s.total),
+        availableAssets: parseInt(s.available),
+        inUseAssets: parseInt(s.in_use),
+        maintenanceAssets: parseInt(s.maintenance),
+        brokenAssets: parseInt(s.broken),
+        disposedAssets: parseInt(s.disposed),
       },
-      categoryStats: categoryStats || [],
-      departmentStats: departmentStats || [],
-      statusStats: statusStats || [],
+      categoryStats: categoryRes.rows.map((r) => ({
+        category: r.category,
+        count: parseInt(r.count),
+      })),
+      statusStats: statusRes.rows.map((r) => ({
+        status: r.status,
+        count: parseInt(r.count),
+      })),
+      recentAssets: recentAssetsRes.rows,
+      recentTickets: recentTicketsRes.rows,
     });
   } catch (error) {
-    console.error("❌ Dashboard error:", error);
+    console.error("Dashboard error:", error);
     next(error);
   }
 });
