@@ -29,6 +29,18 @@ const SLIP_SELECT = `
   LEFT JOIN assets a  ON a.id = hsi.asset_id
 `;
 
+// Helper: Sinh slip_number
+async function generateSlipNumber() {
+  const today = new Date().toISOString().split("T")[0].replace(/-/g, "");
+  const { rows } = await pool.query(
+    `SELECT COUNT(*) as count FROM handover_slips 
+     WHERE DATE(created_at) = CURRENT_DATE`,
+  );
+  const count = parseInt(rows[0].count) + 1;
+  const seq = String(count).padStart(4, "0");
+  return `HND-${today}-${seq}`;
+}
+
 // GET /api/handover
 router.get(
   "/",
@@ -149,23 +161,37 @@ router.post(
         });
       }
 
-      // 2. Tạo handover_slip
+      // 2. Sinh slip_number và tạo handover_slip
+      const slipNumber = await generateSlipNumber();
       const { rows: slipRows } = await client.query(
         `INSERT INTO handover_slips
-           (slip_type, to_employee_code, issued_by, notes, status)
-         VALUES ('handover', $1, $2, $3, 'generated')
+           (slip_number, slip_date, slip_type, to_employee_code, issued_by, notes, status)
+         VALUES ($1, CURRENT_DATE, 'handover', $2, $3, $4, 'generated')
          RETURNING *`,
-        [to_employee_code, req.user.employee_code, notes || null],
+        [slipNumber, to_employee_code, req.user.employee_code, notes || null],
       );
       const slip = slipRows[0];
 
       // 3. Insert handover_slip_items + update assets + ghi asset_history
       for (const assetId of asset_ids) {
+        // Lấy asset_code
+        const { rows: assetInfo } = await client.query(
+          `SELECT asset_code, product_name, model, serial_number FROM assets WHERE id = $1`,
+          [assetId],
+        );
+
         // slip items
         await client.query(
-          `INSERT INTO handover_slip_items (slip_id, asset_id)
-           VALUES ($1, $2)`,
-          [slip.id, assetId],
+          `INSERT INTO handover_slip_items (slip_id, asset_id, asset_code, product_name, model, serial_number)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            slip.id,
+            assetId,
+            assetInfo[0]?.asset_code,
+            assetInfo[0]?.product_name,
+            assetInfo[0]?.model,
+            assetInfo[0]?.serial_number,
+          ],
         );
 
         // update asset status
@@ -240,22 +266,30 @@ router.post(
       // Lấy employee hiện tại (giả sử tất cả cùng 1 người — lấy từ asset đầu tiên)
       const fromEmployee = assets[0].current_user_employee_code;
 
-      // 2. Tạo return slip
+      // 2. Sinh slip_number và tạo return slip
+      const slipNumber = await generateSlipNumber();
       const { rows: slipRows } = await client.query(
         `INSERT INTO handover_slips
-           (slip_type, from_employee_code, issued_by, notes, status)
-         VALUES ('return', $1, $2, $3, 'generated')
+           (slip_number, slip_date, slip_type, from_employee_code, issued_by, notes, status)
+         VALUES ($1, CURRENT_DATE, 'return', $2, $3, $4, 'generated')
          RETURNING *`,
-        [fromEmployee, req.user.employee_code, notes || null],
+        [slipNumber, fromEmployee, req.user.employee_code, notes || null],
       );
       const slip = slipRows[0];
 
       // 3. Insert items + update assets + ghi history
       for (const asset of assets) {
         await client.query(
-          `INSERT INTO handover_slip_items (slip_id, asset_id)
-           VALUES ($1, $2)`,
-          [slip.id, asset.id],
+          `INSERT INTO handover_slip_items (slip_id, asset_id, asset_code, product_name, model, serial_number)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            slip.id,
+            asset.id,
+            asset.asset_code,
+            asset.product_name,
+            asset.model,
+            asset.serial_number,
+          ],
         );
 
         await client.query(

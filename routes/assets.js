@@ -8,6 +8,18 @@ import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
 
+// Helper: Sinh slip_number
+async function generateSlipNumber() {
+  const today = new Date().toISOString().split("T")[0].replace(/-/g, "");
+  const { rows } = await pool.query(
+    `SELECT COUNT(*) as count FROM handover_slips 
+     WHERE DATE(created_at) = CURRENT_DATE`,
+  );
+  const count = parseInt(rows[0].count) + 1;
+  const seq = String(count).padStart(4, "0");
+  return `HND-${today}-${seq}`;
+}
+
 async function fetchAssetImages(assetId) {
   const { rows } = await pool.query(
     `SELECT id, file_name, file_url, file_type, file_size, is_primary, uploaded_at
@@ -358,7 +370,7 @@ router.post(
 
       // 1. Kiểm tra asset còn available không
       const { rows: assetRows } = await client.query(
-        `SELECT id, status FROM assets WHERE id = $1`,
+        `SELECT id, asset_code, product_name, model, serial_number, status FROM assets WHERE id = $1`,
         [assetId],
       );
       if (assetRows.length === 0) {
@@ -392,12 +404,30 @@ router.post(
         [assetId, employee_code, req.user.employee_code],
       );
 
-      // 4. Tạo handover_slip (slip_type đúng: 'handover' không phải 'allocation')
-      await client.query(
+      // 4. Sinh slip_number và tạo handover_slip
+      const slipNumber = await generateSlipNumber();
+      const { rows: slipRows } = await client.query(
         `INSERT INTO handover_slips
-           (id, asset_id, to_employee_code, slip_type, issued_by, status)
-         VALUES ($1, $2, $3, 'handover', $4, 'draft')`,
-        [randomUUID(), assetId, employee_code, req.user.employee_code],
+           (slip_number, slip_date, to_employee_code, slip_type, issued_by, status)
+         VALUES ($1, CURRENT_DATE, $2, 'handover', $3, 'generated')
+         RETURNING *`,
+        [slipNumber, employee_code, req.user.employee_code],
+      );
+      const slip = slipRows[0];
+
+      // 5. Tạo handover_slip_items (ánh xạ asset vào slip)
+      await client.query(
+        `INSERT INTO handover_slip_items
+           (slip_id, asset_id, asset_code, product_name, model, serial_number)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          slip.id,
+          assetId,
+          assetRows[0].asset_code,
+          assetRows[0].product_name,
+          assetRows[0].model,
+          assetRows[0].serial_number,
+        ],
       );
 
       await client.query("COMMIT");
@@ -429,7 +459,7 @@ router.post(
 
       // 1. Lấy người đang dùng
       const { rows: current } = await client.query(
-        `SELECT id, current_user_employee_code, status FROM assets WHERE id = $1`,
+        `SELECT id, asset_code, product_name, model, serial_number, current_user_employee_code, status FROM assets WHERE id = $1`,
         [assetId],
       );
       if (current.length === 0) {
@@ -478,17 +508,29 @@ router.post(
         [assetId, prevEmployee, req.user.employee_code],
       );
 
-      // 5. Tạo handover_slip return
-      await client.query(
+      // 5. Sinh slip_number và tạo handover_slip return
+      const returnSlipNumber = await generateSlipNumber();
+      const { rows: returnSlipRows } = await client.query(
         `INSERT INTO handover_slips
-           (id, asset_id, from_employee_code, slip_type, issued_by, status, notes)
-         VALUES ($1, $2, $3, 'return', $4, 'draft', $5)`,
+           (slip_number, slip_date, from_employee_code, slip_type, issued_by, status, notes)
+         VALUES ($1, CURRENT_DATE, $2, 'return', $3, 'generated', $4)
+         RETURNING *`,
+        [returnSlipNumber, prevEmployee, req.user.employee_code, notes || null],
+      );
+      const returnSlip = returnSlipRows[0];
+
+      // 6. Tạo handover_slip_items
+      await client.query(
+        `INSERT INTO handover_slip_items
+           (slip_id, asset_id, asset_code, product_name, model, serial_number)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
-          randomUUID(),
+          returnSlip.id,
           assetId,
-          prevEmployee,
-          req.user.employee_code,
-          notes || null,
+          current[0].asset_code,
+          current[0].product_name,
+          current[0].model,
+          current[0].serial_number,
         ],
       );
 
