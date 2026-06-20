@@ -8,7 +8,7 @@ const router = express.Router();
 router.post(
   "/assets",
   authenticate,
-  authorize("admin_it", "accountant"),
+  authorize("it_admin", "manager"),
   async (req, res) => {
     try {
       const {
@@ -102,7 +102,7 @@ router.post(
 router.post(
   "/maintenance",
   authenticate,
-  authorize("admin_it", "accountant"),
+  authorize("it_admin", "manager"),
   async (req, res) => {
     try {
       const { startDate, endDate, status, technician } = req.body;
@@ -180,7 +180,7 @@ router.post(
   },
 );
 
-router.post("/users", authenticate, authorize("admin_it"), async (req, res) => {
+router.post("/users", authenticate, authorize("it_admin"), async (req, res) => {
   try {
     const { startDate, endDate, department } = req.body;
 

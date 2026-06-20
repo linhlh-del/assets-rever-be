@@ -9,13 +9,56 @@ const router = express.Router();
 
 router.get("/", authenticate, async (req, res) => {
   try {
+    const { search, page = 1, limit = 20 } = req.query;
+    const conditions = [];
+    const params = [];
+
+    if (search?.trim()) {
+      params.push(`%${search.trim()}%`);
+      const idx = params.length;
+      conditions.push(
+        `(i.invoice_number ILIKE $${idx} OR i.supplier ILIKE $${idx})`,
+      );
+    }
+
+    const where = conditions.length
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+
+    // Count
+    const {
+      rows: [{ count }],
+    } = await pool.query(
+      `SELECT COUNT(*) FROM invoices i ${where}`,
+      params,
+    );
+
+    // Data with pagination
+    const pageNum = parseInt(page) || 1;
+    const pageSize = parseInt(limit) || 20;
+    params.push(pageSize, (pageNum - 1) * pageSize);
+
     const { rows: invoices } = await pool.query(
       `SELECT i.*, u.full_name AS created_by_name
        FROM invoices i
        LEFT JOIN users u ON u.employee_code = i.created_by
-       ORDER BY i.created_at DESC`,
+       ${where}
+       ORDER BY i.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
     );
-    res.json({ success: true, data: { invoices } });
+
+    res.json({
+      success: true,
+      data: {
+        invoices,
+        pagination: {
+          total: parseInt(count),
+          page: pageNum,
+          limit: pageSize,
+        },
+      },
+    });
   } catch (error) {
     console.error("Invoices fetch error:", error);
     res
@@ -51,7 +94,7 @@ router.get("/:invoiceNumber", authenticate, async (req, res) => {
 router.post(
   "/",
   authenticate,
-  authorize("admin_it", "accountant"),
+  authorize("it_admin", "manager"),
   validate(invoiceSchema),
   async (req, res) => {
     try {
@@ -97,7 +140,7 @@ router.post(
 router.put(
   "/:invoiceNumber",
   authenticate,
-  authorize("admin_it", "accountant"),
+  authorize("it_admin", "manager"),
   validate(invoiceSchema),
   async (req, res) => {
     try {
@@ -130,7 +173,7 @@ router.put(
 router.delete(
   "/:invoiceNumber",
   authenticate,
-  authorize("admin_it"),
+  authorize("it_admin"),
   async (req, res) => {
     try {
       const { invoiceNumber } = req.params;

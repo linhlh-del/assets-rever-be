@@ -104,7 +104,7 @@ router.post(
 router.put(
   "/:ticketId",
   authenticate,
-  authorize("admin_it", "accountant"),
+  authorize("it_admin", "manager"),
   async (req, res) => {
     try {
       const { ticketId } = req.params;
@@ -158,7 +158,7 @@ router.put(
 router.patch(
   "/:ticketId/status",
   authenticate,
-  authorize("admin_it", "accountant"),
+  authorize("it_admin", "manager"),
   async (req, res) => {
     try {
       const { ticketId } = req.params;
@@ -209,7 +209,7 @@ router.patch(
 router.delete(
   "/:ticketId",
   authenticate,
-  authorize("admin_it"),
+  authorize("it_admin"),
   async (req, res) => {
     try {
       const { ticketId } = req.params;
