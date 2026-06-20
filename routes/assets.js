@@ -1,10 +1,26 @@
 import express from "express";
 import pool from "../config/db.js";
+import supabase from "../config/supabase.js";
 import { randomUUID } from "crypto";
 import { authenticate } from "../middleware/auth.js";
 import { authorize } from "../middleware/authorize.js";
+import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
+
+async function fetchAssetImages(assetId) {
+  const { rows } = await pool.query(
+    `SELECT id, file_name, file_url, file_type, file_size, is_primary, uploaded_at
+     FROM asset_images
+     WHERE asset_id = $1
+     ORDER BY is_primary DESC, uploaded_at DESC`,
+    [assetId],
+  );
+  return rows.map((row) => ({
+    ...row,
+    image_url: row.file_url,
+  }));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/assets
@@ -115,7 +131,10 @@ router.get("/:id", authenticate, async (req, res, next) => {
         .json({ success: false, message: "Không tìm thấy tài sản" });
     }
 
-    res.json({ success: true, data: { asset: rows[0] } });
+    const asset = rows[0];
+    asset.asset_images = await fetchAssetImages(asset.id);
+
+    res.json({ success: true, data: { asset } });
   } catch (error) {
     next(error);
   }
@@ -243,8 +262,17 @@ router.put(
            warranty_months      = COALESCE($8,  warranty_months),
            status               = COALESCE($9,  status),
            notes                = COALESCE($10, notes),
+           invoice_id           = COALESCE($11, invoice_id),
+           disposal_date        = COALESCE($12, disposal_date),
+           disposal_reason      = COALESCE($13, disposal_reason),
+           disposal_reason_type = COALESCE($14, disposal_reason_type),
+           disposal_price       = COALESCE($15, disposal_price),
+           current_user_employee_code = CASE
+             WHEN COALESCE($9, status) = 'disposed' THEN NULL
+             ELSE current_user_employee_code
+           END,
            updated_at           = NOW()
-         WHERE id = $11
+         WHERE id = $16
          RETURNING *`,
         [
           b.product_name || null,
@@ -257,6 +285,11 @@ router.put(
           b.warranty_months || null,
           b.status || null,
           b.notes || null,
+          b.invoice_id || null,
+          b.disposal_date || null,
+          b.disposal_reason || null,
+          b.disposal_reason_type || null,
+          b.disposal_price ?? null,
           req.params.id,
         ],
       );
@@ -467,6 +500,121 @@ router.post(
       next(error);
     } finally {
       client.release();
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/assets/:id/images
+// ─────────────────────────────────────────────────────────────────────────────
+router.post(
+  "/:id/images",
+  authenticate,
+  authorize("it_admin", "manager"),
+  upload.array("images", 5),
+  async (req, res, next) => {
+    try {
+      const assetId = req.params.id;
+
+      const { rows: assetRows } = await pool.query(
+        `SELECT id FROM assets WHERE id = $1`,
+        [assetId],
+      );
+      if (assetRows.length === 0) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Không tìm thấy tài sản" });
+      }
+
+      if (!req.files?.length) {
+        return res.status(400).json({
+          success: false,
+          message: "Không có file nào được gửi lên",
+        });
+      }
+
+      const uploadedImages = [];
+
+      for (const file of req.files) {
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const storagePath = `${assetId}/${Date.now()}-${safeName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("asset-images")
+          .upload(storagePath, file.buffer, {
+            contentType: file.mimetype,
+            upsert: false,
+          });
+
+        if (uploadError) {
+          return res.status(500).json({
+            success: false,
+            message: `Upload thất bại: ${uploadError.message}`,
+          });
+        }
+
+        const { data: urlData } = supabase.storage
+          .from("asset-images")
+          .getPublicUrl(storagePath);
+
+        const isPrimary = uploadedImages.length === 0;
+        const { rows: imageRows } = await pool.query(
+          `INSERT INTO asset_images
+             (asset_id, file_name, file_url, file_type, file_size, is_primary, uploaded_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING *`,
+          [
+            assetId,
+            file.originalname,
+            urlData.publicUrl,
+            file.mimetype,
+            file.size,
+            isPrimary,
+            req.user.employee_code,
+          ],
+        );
+
+        uploadedImages.push({
+          ...imageRows[0],
+          image_url: imageRows[0].file_url,
+        });
+      }
+
+      res.status(201).json({
+        success: true,
+        data: { images: uploadedImages },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/assets/:id/images/:imageId
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete(
+  "/:id/images/:imageId",
+  authenticate,
+  authorize("it_admin", "manager"),
+  async (req, res, next) => {
+    try {
+      const { id: assetId, imageId } = req.params;
+
+      const { rowCount } = await pool.query(
+        `DELETE FROM asset_images WHERE id = $1 AND asset_id = $2`,
+        [imageId, assetId],
+      );
+
+      if (rowCount === 0) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Không tìm thấy ảnh" });
+      }
+
+      res.json({ success: true, message: "Xóa ảnh thành công" });
+    } catch (error) {
+      next(error);
     }
   },
 );
