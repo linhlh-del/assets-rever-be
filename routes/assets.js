@@ -8,6 +8,10 @@ import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
 
+// Số ảnh tối đa được phép lưu cho MỘT tài sản (tính trên toàn bộ DB,
+// không phải chỉ trong 1 lần upload).
+const MAX_IMAGES_PER_ASSET = 10;
+
 // Helper: Sinh slip_number
 async function generateSlipNumber() {
   const today = new Date().toISOString().split("T")[0].replace(/-/g, "");
@@ -553,7 +557,7 @@ router.post(
   "/:id/images",
   authenticate,
   authorize("it_admin", "manager"),
-  upload.array("images", 5),
+  upload.array("images", 10), // max 10 files per request
   async (req, res, next) => {
     try {
       const assetId = req.params.id;
@@ -574,6 +578,46 @@ router.post(
           message: "Không có file nào được gửi lên",
         });
       }
+
+      // FIX: chặn tổng số ảnh/asset vượt quá MAX_IMAGES_PER_ASSET.
+      // Đây là chốt chặn THẬT SỰ — tính trên TỔNG số ảnh đã có trong DB
+      // cộng với số file đang upload lần này, không chỉ riêng batch hiện
+      // tại. Nếu chỉ chặn ở FE (maxFiles của dropzone), người dùng vẫn có
+      // thể upload nhiều lần nhỏ lẻ (1 ảnh/lần) để vượt giới hạn, vì FE
+      // không biết tổng số ảnh đã tồn tại trước đó trong DB.
+      const { rows: countRows } = await pool.query(
+        `SELECT COUNT(*) AS count FROM asset_images WHERE asset_id = $1`,
+        [assetId],
+      );
+      const currentImageCount = parseInt(countRows[0].count, 10);
+
+      if (currentImageCount + req.files.length > MAX_IMAGES_PER_ASSET) {
+        const remaining = Math.max(0, MAX_IMAGES_PER_ASSET - currentImageCount);
+        return res.status(400).json({
+          success: false,
+          message:
+            remaining > 0
+              ? `Tài sản này đã có ${currentImageCount} ảnh. Chỉ được tối đa ${MAX_IMAGES_PER_ASSET} ảnh/tài sản, bạn chỉ có thể thêm tối đa ${remaining} ảnh nữa.`
+              : `Tài sản này đã đạt giới hạn ${MAX_IMAGES_PER_ASSET} ảnh. Vui lòng xóa bớt ảnh cũ trước khi thêm ảnh mới.`,
+        });
+      }
+
+      // FIX (duplicate key "idx_asset_images_primary"):
+      // Trước đây isPrimary được tính bằng `uploadedImages.length === 0`,
+      // tức là chỉ nhìn vào mảng local của REQUEST HIỆN TẠI. Vì mảng này
+      // luôn reset về [] mỗi lần gọi API, nên mỗi lần upload thêm ảnh vào
+      // một asset ĐÃ CÓ SẴN ảnh primary, ảnh đầu tiên của request mới vẫn
+      // bị đánh dấu is_primary = true -> insert thêm 1 row is_primary = true
+      // cho cùng asset_id -> vi phạm unique index idx_asset_images_primary
+      // (mỗi asset chỉ được phép có tối đa 1 ảnh is_primary = true).
+      //
+      // Cách fix: query DB trước để biết asset này đã từng có ảnh primary
+      // chưa (tính trên toàn bộ lịch sử, không chỉ batch hiện tại).
+      const { rows: existingPrimaryRows } = await pool.query(
+        `SELECT id FROM asset_images WHERE asset_id = $1 AND is_primary = true LIMIT 1`,
+        [assetId],
+      );
+      let hasPrimaryAlready = existingPrimaryRows.length > 0;
 
       const uploadedImages = [];
 
@@ -599,7 +643,13 @@ router.post(
           .from("asset-images")
           .getPublicUrl(storagePath);
 
-        const isPrimary = uploadedImages.length === 0;
+        // Chỉ ảnh đầu tiên khi asset CHƯA từng có primary mới được đánh dấu
+        // true. Mọi ảnh khác (cùng batch hoặc các lần upload sau) -> false.
+        const isPrimary = !hasPrimaryAlready;
+        if (isPrimary) {
+          hasPrimaryAlready = true; // "dùng" suất primary, các file còn lại trong batch này sẽ là false
+        }
+
         const { rows: imageRows } = await pool.query(
           `INSERT INTO asset_images
              (asset_id, file_name, file_url, file_type, file_size, is_primary, uploaded_by)
