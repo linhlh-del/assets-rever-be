@@ -2,8 +2,10 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
+import { verifyEmailConnection } from "./lib/email.js";
 
 dotenv.config();
+verifyEmailConnection();
 
 // Import tất cả routes
 import authRouter from "./routes/auth.js";
