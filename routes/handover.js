@@ -7,6 +7,7 @@ import { authorize } from "../middleware/authorize.js";
 import { sendHandoverEmail } from "../lib/email.js";
 import supabase from "../config/supabase.js";
 import multer from "multer";
+import { generateSlipNumber } from "../utils/generateSlipNumber.js";
 
 const uploadSlip = multer({
   storage: multer.memoryStorage(),
@@ -55,16 +56,16 @@ const SLIP_SELECT = `
   LEFT JOIN assets a  ON a.id = hsi.asset_id
 `;
 
-async function generateSlipNumber() {
-  const today = new Date().toISOString().split("T")[0].replace(/-/g, "");
-  const { rows } = await pool.query(
-    `SELECT COUNT(*) as count FROM handover_slips
-     WHERE DATE(created_at) = CURRENT_DATE`,
-  );
-  const count = parseInt(rows[0].count) + 1;
-  const seq = String(count).padStart(4, "0");
-  return `HND-${today}-${seq}`;
-}
+// async function generateSlipNumber() {
+//   const today = new Date().toISOString().split("T")[0].replace(/-/g, "");
+//   const { rows } = await pool.query(
+//     `SELECT COUNT(*) as count FROM handover_slips
+//      WHERE DATE(created_at) = CURRENT_DATE`,
+//   );
+//   const count = parseInt(rows[0].count) + 1;
+//   const seq = String(count).padStart(4, "0");
+//   return `HND-${today}-${seq}`;
+// }
 
 // ─── GET /api/handover ────────────────────────────────────────────────────────
 router.get(
@@ -184,7 +185,7 @@ router.post(
         });
       }
 
-      const slipNumber = await generateSlipNumber();
+      const slipNumber = await generateSlipNumber(client);
       const { rows: slipRows } = await client.query(
         `INSERT INTO handover_slips
            (slip_number, slip_date, slip_type, to_employee_code, issued_by, notes, status)
@@ -284,7 +285,7 @@ router.post(
 
       const fromEmployee = assets[0].current_user_employee_code;
 
-      const slipNumber = await generateSlipNumber();
+      const slipNumber = await generateSlipNumber(client);
       const { rows: slipRows } = await client.query(
         `INSERT INTO handover_slips
            (slip_number, slip_date, slip_type, from_employee_code, issued_by, notes, status)

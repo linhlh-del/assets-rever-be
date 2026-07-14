@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { authenticate } from "../middleware/auth.js";
 import { authorize } from "../middleware/authorize.js";
 import { upload } from "../middleware/upload.js";
+import { generateSlipNumber } from "../utils/generateSlipNumber.js";
 
 const router = express.Router();
 
@@ -13,16 +14,16 @@ const router = express.Router();
 const MAX_IMAGES_PER_ASSET = 10;
 
 // Helper: Sinh slip_number
-async function generateSlipNumber() {
-  const today = new Date().toISOString().split("T")[0].replace(/-/g, "");
-  const { rows } = await pool.query(
-    `SELECT COUNT(*) as count FROM handover_slips 
-     WHERE DATE(created_at) = CURRENT_DATE`,
-  );
-  const count = parseInt(rows[0].count) + 1;
-  const seq = String(count).padStart(4, "0");
-  return `HND-${today}-${seq}`;
-}
+// async function generateSlipNumber() {
+//   const today = new Date().toISOString().split("T")[0].replace(/-/g, "");
+//   const { rows } = await pool.query(
+//     `SELECT COUNT(*) as count FROM handover_slips
+//      WHERE DATE(created_at) = CURRENT_DATE`,
+//   );
+//   const count = parseInt(rows[0].count) + 1;
+//   const seq = String(count).padStart(4, "0");
+//   return `HND-${today}-${seq}`;
+// }
 
 async function fetchAssetImages(assetId) {
   const { rows } = await pool.query(
@@ -409,7 +410,7 @@ router.post(
       );
 
       // 4. Sinh slip_number và tạo handover_slip
-      const slipNumber = await generateSlipNumber();
+      const slipNumber = await generateSlipNumber(client);
       const { rows: slipRows } = await client.query(
         `INSERT INTO handover_slips
            (slip_number, slip_date, to_employee_code, slip_type, issued_by, status)
@@ -513,7 +514,7 @@ router.post(
       );
 
       // 5. Sinh slip_number và tạo handover_slip return
-      const returnSlipNumber = await generateSlipNumber();
+      const returnSlipNumber = await generateSlipNumber(client);
       const { rows: returnSlipRows } = await client.query(
         `INSERT INTO handover_slips
            (slip_number, slip_date, from_employee_code, slip_type, issued_by, status, notes)
